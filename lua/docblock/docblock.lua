@@ -16,7 +16,7 @@ local M = {}
 
             if node:type() == 'class_declaration' then
                 return node
-            else 
+            else
                 findClassDeclaration(node:child())
             end
         end

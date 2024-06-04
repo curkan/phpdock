@@ -19,6 +19,13 @@ local function getPropertyType(node)
 
     if node:type() == 'union_type' then
         type = vim.treesitter.get_node_text(node, 0)
+    elseif node:type() == 'primitive_type' then
+        type = vim.treesitter.get_node_text(node, 0)
+    elseif node:type() == 'property_element' then
+        type = vim.treesitter.get_node_text(node, 0)
+        print(type)
+    elseif node:type() == 'optional_type' then
+        type = "null"
     end
 
     return type
@@ -95,6 +102,50 @@ local function writeSetter(bufnr, property, existing_setters, last_brace_index, 
     end
 end
 
+local function setToTables(child, properties, index, name, type)
+    if child:child(1):type() == 'optional_type' then
+        type = vim.treesitter.get_node_text(child:child(1), 0)
+    end
+
+    if child:child(1):type() == 'primitive_type' then
+        type = getPropertyType(child:child(1))
+    end
+
+    if child:child(1):type() == 'union_type' then
+        type = getPropertyType(child:child(1))
+    end
+
+    -- if child:child(2):type() == 'property_element' then
+    --     type = type .. getPropertyType(child:child(2))
+    -- end
+    --
+    -- if child:child(2):type() == 'union_type' then
+    --     type = type .. getPropertyType(child:child(2))
+    -- elseif (child:child(3) ~= nil and child:child(3):type() or '') == 'union_type' then
+    --     type = type .. getPropertyType(child:child(3))
+    -- end
+
+    if (child:child(2):type() == 'variable_name') then
+        name = vim.treesitter.get_node_text(child:child(2):child(1), 0)
+    end
+
+    if child:child(1):type() == 'property_element' then
+        index = 1
+    elseif child:child(2):type() == 'property_element' then
+        index = 2
+    elseif (child:child(3) ~= nil and child:child(3):type() or '') == 'property_element' then
+        index = 3
+    end
+
+    local property = child:child(index)
+        if property:type() == 'property_element' then
+            name = getPropertyName(property)
+        end
+
+    table.insert(properties, {name = name, type = type})
+
+end
+
 function M.generate_getters_setters(method)
     local bufnr = vim.api.nvim_get_current_buf()
     local parser = vim.treesitter.get_parser(bufnr, 'php')
@@ -117,11 +168,25 @@ function M.generate_getters_setters(method)
 
     local function find_properties(node)
         for child in node:iter_children() do
-            if child:type() == 'property_declaration' then
-                local index = 0
-                local name = ''
-                local type = ''
+            local index = 0
+            local name = ''
+            local type = ''
 
+            if child:type() == 'method_declaration' then
+                if (vim.treesitter.get_node_text(child:child(2), 0) == '__construct') then
+                    -- Проверяем все параметры внутри конструктора
+                    if (child:child(3):type() == 'formal_parameters') then
+                        local formal_parametrs = child:child(3)
+                        for param in formal_parametrs:iter_children() do
+                            if (param:type() == 'property_promotion_parameter') then
+                                setToTables(param, properties, index, name, type)
+                            end
+                        end
+                    end
+                end
+            end
+
+            if child:type() == 'property_declaration' then
                 -- Если метод статический, то для него не делаем сеттеры и геттеры
                 if child:child(1):type() == 'static_modifier' then
                     goto continue
@@ -129,37 +194,15 @@ function M.generate_getters_setters(method)
                     goto continue
                 end
 
-                if child:child(1):type() == 'union_type' then
-                    type = getPropertyType(child:child(1))
-                elseif child:child(2):type() == 'union_type' then
-                    type = getPropertyType(child:child(2))
-                elseif (child:child(3) ~= nil and child:child(3):type() or '') == 'union_type' then
-                    type = getPropertyType(child:child(3))
-                end
-
-
-                if child:child(1):type() == 'property_element' then
-                    index = 1
-                elseif child:child(2):type() == 'property_element' then
-                    index = 2
-                elseif (child:child(3) ~= nil and child:child(3):type() or '') == 'property_element' then
-                    index = 3
-                end
-
-                local property = child:child(index)
-                    if property:type() == 'property_element' then
-                        name = getPropertyName(property)
-                    end
-
-                    table.insert(properties, {name = name, type = type})
-                    else
+                setToTables(child, properties, index, name, type)
+            else
                 find_properties(child)
             end
             ::continue::
         end
     end
-    find_properties(root:root())
 
+    find_properties(root:root())
 
     -- Находим индекс последней фигурной скобки класса
     local last_brace_index = class_node:end_()
@@ -199,7 +242,17 @@ function M.generate_getters_setters(method)
 
     find_methods(class_node)
 
-  -- Генерируйте геттеры и сеттеры для каждого проперти
+    local function reverse_table(t)
+        local reversed = {}
+        for i = #t, 1, -1 do
+            table.insert(reversed, t[i])
+        end
+        return reversed
+    end
+
+    -- Меняем порядок 
+    properties = reverse_table(properties)
+    -- Генерируйте геттеры и сеттеры для каждого проперти
     for _, property in ipairs(properties) do
         if method == nil then
             writeGetter(bufnr, property, existing_getters, last_brace_index, 'getter')
